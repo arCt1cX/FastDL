@@ -9,11 +9,16 @@ const jobs = new Map();
 const privatePaths = new Map(); // notifiche incognito: solo in memoria, mai salvate
 let seq = 0;
 
-const ready = chrome.storage.local.get(['enabled', 'connections', 'outDir', 'recent']).then(s => {
+const ready = chrome.storage.local.get(['enabled', 'connections', 'outDir', 'recent', 'paused']).then(s => {
   if (typeof s.enabled === 'boolean') settings.enabled = s.enabled;
   if (typeof s.connections === 'number') settings.connections = s.connections;
   if (typeof s.outDir === 'string') settings.outDir = s.outDir;
   if (Array.isArray(s.recent)) recent = s.recent;
+  // download in pausa sopravvivono al riavvio di Chrome (gli incognito no: mai salvati su disco)
+  if (Array.isArray(s.paused)) for (const p of s.paused) {
+    const job = { ...p, id: ++seq, state: 'paused', speed: 0, conns: 0 };
+    jobs.set(job.id, job);
+  }
   publish();
 });
 
@@ -24,60 +29,85 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (ch.outDir) settings.outDir = ch.outDir.newValue || '';
 });
 
-chrome.downloads.onCreated.addListener(async item => {
+// Intercettiamo in onDeterminingFilename (non onCreated): arriva PRIMA che Chrome mostri
+// "Salva con nome". Per i download che prendiamo non chiamiamo mai suggest(), quindi
+// la finestra non compare; per gli altri suggest() lascia proseguire Chrome normalmente.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  decide(item).then(take => {
+    if (!take) { suggest(); return; }
+    const url = item.finalUrl || item.url;
+    chrome.downloads.cancel(item.id)
+      .then(() => chrome.downloads.erase({ id: item.id }))
+      .catch(() => {});
+    const job = {
+      id: ++seq, url, name: baseName(item.filename) || baseName(new URL(url).pathname) || 'download',
+      done: 0, total: item.totalBytes || 0, speed: 0, conns: 0, state: 'starting', started: Date.now(),
+      incognito: !!item.incognito,
+      // tutto quello che serve per riprendere dopo una pausa
+      req: { url, referrer: item.referrer || '', mime: item.mime || '', nameHint: baseName(item.filename), outDir: settings.outDir }
+    };
+    jobs.set(job.id, job);
+    run(job);
+  }, () => suggest());
+  return true; // risposta asincrona
+});
+
+async function decide(item) {
   await ready;
   const url = item.finalUrl || item.url;
-  if (!settings.enabled || item.state !== 'in_progress') return;
-  if (item.byExtensionId) return; // avviato da un'estensione (anche i nostri fallback): lascia fare a Chrome
-  if (shouldSkip(item)) return;
-  if (!/^https?:\/\//i.test(url)) return; // blob:, data:, file: -> Chrome
-  if (item.totalBytes > 0 && item.totalBytes < MIN_SIZE) return;
-
-  try { await chrome.downloads.cancel(item.id); } catch {}
-  try { await chrome.downloads.erase({ id: item.id }); } catch {}
-  start(url, item);
-});
+  if (!settings.enabled || item.state !== 'in_progress') return false;
+  if (item.byExtensionId) return false; // avviato da un'estensione (anche i nostri fallback): lascia fare a Chrome
+  if (shouldSkip(item)) return false;
+  if (!/^https?:\/\//i.test(url)) return false; // blob:, data:, file: -> Chrome
+  if (item.totalBytes > 0 && item.totalBytes < MIN_SIZE) return false;
+  return true;
+}
 
 function baseName(p) { return (p || '').split(/[\\/]/).pop(); }
 
-async function start(url, item) {
-  let cookie = '';
+async function cookiesFor(url, incognito) {
   try {
-    // incognito ha il suo archivio cookie separato
     const opts = { url };
-    if (item.incognito) {
+    if (incognito) { // incognito ha il suo archivio cookie separato
       const stores = await chrome.cookies.getAllCookieStores();
       const inc = stores.find(s => s.id !== '0');
       if (inc) opts.storeId = inc.id;
     }
     const cs = await chrome.cookies.getAll(opts);
-    cookie = cs.map(c => c.name + '=' + c.value).join('; ');
-  } catch {}
+    return cs.map(c => c.name + '=' + c.value).join('; ');
+  } catch { return ''; }
+}
 
-  const job = {
-    id: ++seq, url, name: baseName(item.filename) || baseName(new URL(url).pathname) || 'download',
-    done: 0, total: item.totalBytes || 0, speed: 0, conns: 0, state: 'starting', started: Date.now(),
-    incognito: !!item.incognito
-  };
-  jobs.set(job.id, job);
+// Avvia (o riprende) un job: il motore trova da solo il file parziale e riparte da li'.
+async function run(job) {
+  const r = job.req;
+  const cookie = await cookiesFor(r.url, job.incognito);
+  const resuming = job.state === 'paused';
+  job.state = 'starting'; job.cancelled = false; job.pausing = false; job.speed = 0;
 
   let port;
   try { port = chrome.runtime.connectNative(HOST); }
-  catch (e) { jobs.delete(job.id); fallback(url); return; }
+  catch (e) { if (!resuming) { jobs.delete(job.id); fallback(r.url, job.incognito); } return; }
   job.port = port;
+  savePaused();
 
   port.onMessage.addListener(m => {
     if (m.type === 'start') {
       job.name = m.name; job.path = m.path; job.total = m.total; job.ranged = m.ranged; job.state = 'downloading';
     } else if (m.type === 'progress') {
       job.done = m.done; job.total = m.total; job.speed = m.speed; job.conns = m.conns;
+    } else if (m.type === 'paused') {
+      job.state = 'paused'; job.done = m.done; job.total = m.total; job.speed = 0; job.conns = 0;
+      try { port.disconnect(); } catch {}
+      job.port = null;
+      savePaused();
     } else if (m.type === 'done') {
       job.state = 'done'; job.path = m.path; job.name = baseName(m.path); job.done = job.total = m.total; job.avg = m.avg;
       finish(job);
     } else if (m.type === 'error') {
       job.state = job.cancelled ? 'cancelled' : 'error'; job.error = m.message;
       finish(job);
-      if (m.fallback && !job.cancelled) fallback(url, job.incognito);
+      if (m.fallback && !job.cancelled && !resuming) fallback(r.url, job.incognito);
     }
     publish();
   });
@@ -90,17 +120,50 @@ async function start(url, item) {
       job.error = err || 'processo terminato';
       finish(job);
       // host non installato o crash prima di partire: il download lo fa Chrome come sempre
-      if (neverStarted && !job.cancelled) fallback(url, job.incognito);
+      if (neverStarted && !job.cancelled && !resuming) fallback(r.url, job.incognito);
     }
     publish();
   });
 
   port.postMessage({
-    cmd: 'download', url, referrer: item.referrer || '', cookie,
-    userAgent: navigator.userAgent, nameHint: baseName(item.filename), mime: item.mime || '',
-    connections: settings.connections, outDir: settings.outDir
+    cmd: 'download', url: r.url, referrer: r.referrer, cookie,
+    userAgent: navigator.userAgent, nameHint: r.nameHint, mime: r.mime,
+    connections: settings.connections, outDir: r.outDir
   });
   publish();
+}
+
+function pause(id) {
+  const j = jobs.get(id);
+  if (!j || !j.port || j.state !== 'downloading' || !j.ranged) return;
+  j.pausing = true;
+  try { j.port.postMessage({ cmd: 'pause' }); } catch {}
+}
+
+function resume(id) {
+  const j = jobs.get(id);
+  if (j && j.state === 'paused') run(j);
+}
+
+function cancel(id) {
+  const j = jobs.get(id);
+  if (!j) return;
+  if (j.state === 'paused') {
+    // nessun processo attivo: chiediamo al motore di cancellare il file parziale
+    if (j.path) chrome.runtime.sendNativeMessage(HOST, { cmd: 'discard', path: j.path }).catch(() => {});
+    j.state = 'cancelled';
+    finish(j);
+    publish();
+    return;
+  }
+  if (j.port) { j.cancelled = true; try { j.port.postMessage({ cmd: 'cancel' }); } catch {} }
+}
+
+function savePaused() {
+  const paused = [...jobs.values()]
+    .filter(j => j.state === 'paused' && !j.incognito)
+    .map(({ url, name, path, done, total, ranged, started, req }) => ({ url, name, path, done, total, ranged, started, req }));
+  chrome.storage.local.set({ paused });
 }
 
 function fallback(url, incognito) {
@@ -134,6 +197,7 @@ function finish(job) {
   if (!jobs.has(job.id)) return;
   jobs.delete(job.id);
   try { job.port && job.port.disconnect(); } catch {}
+  savePaused();
   const r = { id: job.id + '-' + job.started, name: job.name, path: job.path, total: job.total, state: job.state, error: job.error, avg: job.avg, at: Date.now() };
   if (job.incognito) {
     if (job.path) privatePaths.set('fdl:' + r.id, job.path);
@@ -165,14 +229,20 @@ function reveal(path) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  if (msg.cmd === 'cancel') {
-    const j = jobs.get(msg.id);
-    if (j && j.port) { j.cancelled = true; try { j.port.postMessage({ cmd: 'cancel' }); } catch {} }
-  } else if (msg.cmd === 'reveal') {
-    reveal(msg.path);
-  } else if (msg.cmd === 'clear') {
-    recent = []; chrome.storage.local.set({ recent }); publish();
-  } else if (msg.cmd === 'ping') {
+  ready.then(() => {
+    if (msg.cmd === 'cancel') cancel(msg.id);
+    else if (msg.cmd === 'pause') pause(msg.id);
+    else if (msg.cmd === 'resume') resume(msg.id);
+    else if (msg.cmd === 'reveal') reveal(msg.path);
+    else if (msg.cmd === 'removeRecent') {
+      // toglie solo la voce dalla lista: il file scaricato resta dov'e'
+      recent = recent.filter(r => r.id !== msg.id);
+      chrome.storage.local.set({ recent }); publish();
+    } else if (msg.cmd === 'clear') {
+      recent = []; chrome.storage.local.set({ recent }); publish();
+    }
+  });
+  if (msg.cmd === 'ping') {
     chrome.runtime.sendNativeMessage(HOST, { cmd: 'ping' })
       .then(r => reply({ ok: true, info: r }))
       .catch(e => reply({ ok: false, error: String(e && e.message || e) }));
@@ -187,22 +257,25 @@ function publish() {
     pubTimer = null;
     const active = [...jobs.values()].map(j => ({
       id: j.id, name: j.incognito ? '🕶 download privato' : j.name,
-      done: j.done, total: j.total, speed: j.speed, conns: j.conns, state: j.state
+      done: j.done, total: j.total, speed: j.speed, conns: j.conns, state: j.state,
+      ranged: !!j.ranged, pausing: !!j.pausing
     }));
     chrome.storage.session.set({ active, recent }).catch(() => {});
 
-    if (!active.length) {
-      chrome.action.setBadgeText({ text: '' });
-      chrome.action.setTitle({ title: 'FastDL' + (settings.enabled ? '' : ' (in pausa)') });
+    const running = active.filter(j => j.state !== 'paused');
+    if (!running.length) {
+      chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
+      chrome.action.setBadgeText({ text: active.length ? '❚❚' : '' });
+      chrome.action.setTitle({ title: 'FastDL' + (active.length ? ` – ${active.length} in pausa` : '') + (settings.enabled ? '' : ' (disattivato)') });
       return;
     }
     let done = 0, total = 0, speed = 0;
-    for (const j of active) { done += j.done; total += j.total > 0 ? j.total : 0; speed += j.speed || 0; }
+    for (const j of running) { done += j.done; total += j.total > 0 ? j.total : 0; speed += j.speed || 0; }
     const pct = total > 0 ? Math.floor(done * 100 / total) : null;
     chrome.action.setBadgeBackgroundColor({ color: '#2563eb' });
     chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ color: '#ffffff' });
     chrome.action.setBadgeText({ text: pct === null ? '↓' : pct + '%' });
-    chrome.action.setTitle({ title: `FastDL – ${active.length} download · ${fmtSize(speed)}/s` });
+    chrome.action.setTitle({ title: `FastDL – ${running.length} download · ${fmtSize(speed)}/s` });
   }, 250);
 }
 

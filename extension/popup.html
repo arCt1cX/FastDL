@@ -34,8 +34,17 @@
   .meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
-  .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
-  .x:hover { color: var(--err); }
+  .tools { display: flex; gap: 2px; align-items: center; }
+  .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1;
+       width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+  .x:hover { background: var(--hover); color: var(--fg); }
+  .x.del:hover { color: var(--err); }
+  .x.pause { font-size: 10px; letter-spacing: -1px; }
+  .x.play { font-size: 12px; }
+  .x.play:hover { color: var(--accent); }
+  .item .x.del { opacity: .55; }
+  .item:hover .x.del { opacity: 1; }
+  .paused .bar i { background: var(--muted); }
   .st-done { color: var(--ok); } .st-error { color: var(--err); }
   .empty { padding: 14px 12px; color: var(--muted); }
   .dir { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }

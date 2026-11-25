@@ -17,6 +17,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license"></a>
 </p>
 
+<p align="center">
+  <img src="docs/demo.gif" width="760" alt="FastDL downloading 120 MB from a server throttled to 1 MB/s per connection: auto-tuned connections ramp 4 → 8 → 16 → 32, done in 8.4 s, about 14× faster than Chrome alone">
+  <br><sub>Real recording: 120 MB from a server that caps every connection at 1 MB/s. Chrome alone needs ~2 minutes. <a href="demo/">Reproduce it yourself.</a></sub>
+</p>
+
 <p align="center"><a href="#italiano">🇮🇹 Italiano più sotto</a></p>
 
 ---

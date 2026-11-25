@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en" translate="no">
+<head>
+<meta charset="utf-8"><meta name="google" content="notranslate">
+<title>FastDL demo</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#eef1f6; --muted:#8b93a7; --accent:#3b82f6; --ok:#22c55e; --slow:#f59e0b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 36px 24px; }
+  .tag { display: inline-block; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--slow);
+         border: 1px solid #5a4317; background: #2a210f; border-radius: 999px; padding: 3px 10px; }
+  h1 { font-size: 26px; margin: 12px 0 4px; }
+  p.sub { margin: 0 0 22px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+  .row { display: flex; align-items: center; gap: 16px; }
+  .file { flex: 1; }
+  .file b { display: block; font-size: 16px; }
+  .file span { color: var(--muted); font-size: 13px; }
+  a.btn { background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; padding: 10px 18px; border-radius: 10px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+  .stat { background: #12151b; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .stat small { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .stat div { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat div em { font-style: normal; font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 4px; }
+  #speedBox div { color: var(--accent); }
+  .bar { height: 8px; background: #12151b; border: 1px solid var(--line); border-radius: 99px; margin-top: 16px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #60a5fa); transition: width .2s; }
+  svg { display: block; width: 100%; height: 110px; margin-top: 16px; }
+  .legend { display: flex; gap: 18px; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+  #result { margin-top: 18px; font-size: 16px; min-height: 24px; }
+  #result b { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <span class="tag">Throttled server · 1 MB/s per connection</span>
+  <h1>Chrome alone vs. FastDL</h1>
+  <p class="sub">Like many slow download sites, this server caps every single connection at 1&nbsp;MB/s. Chrome uses one connection.</p>
+
+  <div class="card">
+    <div class="row">
+      <div class="file"><b>fastdl-demo-120MB.bin</b><span>120 MB · Chrome alone: ~2 minutes</span></div>
+      <a class="btn" id="dl" href="/demo-file.bin">Download</a>
+    </div>
+    <div class="stats">
+      <div class="stat" id="speedBox"><small>Server is sending</small><div id="speed">0<em>MB/s</em></div></div>
+      <div class="stat"><small>Open connections</small><div id="conns">0</div></div>
+      <div class="stat"><small>Elapsed</small><div id="time">0.0<em>s</em></div></div>
+    </div>
+    <div class="bar"><i id="fill"></i></div>
+    <svg viewBox="0 0 700 110" preserveAspectRatio="none">
+      <line x1="0" y1="106" x2="700" y2="106" stroke="#262b36"/>
+      <line id="chromeLine" x1="0" x2="700" stroke="#f59e0b" stroke-width="2" stroke-dasharray="6 5"/>
+      <polyline id="spark" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linejoin="round" points=""/>
+    </svg>
+    <div class="legend"><span><i style="background:#3b82f6"></i>FastDL</span><span><i style="background:#f59e0b"></i>Chrome alone (1 connection)</span></div>
+    <div id="result"></div>
+  </div>
+</main>
+<script>
+  const MAX = 40 * 1024 * 1024, W = 700, H = 106, MB = 1024 * 1024;
+  const y = v => H - Math.min(v, MAX) / MAX * (H - 6);
+  document.getElementById('chromeLine').setAttribute('y1', y(MB));
+  document.getElementById('chromeLine').setAttribute('y2', y(MB));
+  let t0 = 0, pts = [], finished = false;
+  async function tick() {
+    let s;
+    try { s = await (await fetch('/stats')).json(); } catch { return; }
+    const now = performance.now();
+    if (!t0 && s.conns > 0) t0 = now;
+    if (t0 && !finished) {
+      const el = (now - t0) / 1000;
+      document.getElementById('time').innerHTML = el.toFixed(1) + '<em>s</em>';
+      pts.push([el, Math.max(0, s.rate)]);
+      const span = Math.max(14, el);
+      document.getElementById('spark').setAttribute('points', pts.map(([t, r]) => (t / span * W).toFixed(1) + ',' + y(r).toFixed(1)).join(' '));
+      if (s.served >= s.size && s.conns === 0) {
+        finished = true;
+        document.getElementById('result').innerHTML =
+          `Done in <b>${el.toFixed(1)} s</b> — about <b>${Math.round(s.size / MB / el)}× faster</b> than Chrome alone (${Math.round(s.size / MB)} s).`;
+      }
+    }
+    document.getElementById('speed').innerHTML = (s.rate / MB).toFixed(1) + '<em>MB/s</em>';
+    document.getElementById('conns').textContent = s.conns;
+    document.getElementById('fill').style.width = (s.served / s.size * 100).toFixed(1) + '%';
+  }
+  setInterval(tick, 200);
+  const auto = new URLSearchParams(location.search).get('auto');
+  if (auto) setTimeout(() => { const a = document.getElementById('dl'); a.style.filter = 'brightness(1.25)'; fetch('/reset').then(() => { location.href = '/demo-file.bin'; }); }, +auto);
+</script>
+</body>
+</html>

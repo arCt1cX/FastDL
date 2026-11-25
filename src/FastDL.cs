@@ -14,7 +14,7 @@ using Microsoft.Win32.SafeHandles;
 
 [assembly: System.Reflection.AssemblyTitle("FastDL")]
 [assembly: System.Reflection.AssemblyProduct("FastDL")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
 
 namespace FastDL
 {
@@ -37,6 +37,7 @@ namespace FastDL
         public virtual void Progress(long done, long total, double speed, int conns) { }
         public virtual void Done(string path, long total, double seconds, double avg) { }
         public virtual void Failed(string msg, bool fallback) { }
+        public virtual void Paused(long done, long total) { }
     }
 
     static class Win
@@ -84,7 +85,7 @@ namespace FastDL
         long total = -1, singleDone;
         string finalPath, partPath, statePath;
         FileStream lockFile;
-        volatile bool cancelled, rangeBroken;
+        volatile bool cancelled, rangeBroken, pausing;
         int active, retired;
         volatile string lastError = "";
 
@@ -95,6 +96,8 @@ namespace FastDL
 
         public Downloader(Job j, Reporter r) { job = j; rep = r; }
         public void Cancel() { cancelled = true; }
+        // pausa = stop mantenendo .fdl + .fdl.state: un nuovo download dello stesso file riprende da qui
+        public void Pause() { pausing = true; cancelled = true; }
 
         HttpWebRequest MakeReq(long from, long to)
         {
@@ -483,8 +486,13 @@ namespace FastDL
 
             if (cancelled)
             {
-                if (DeleteOnCancel) { Cleanup(true); rep.Failed("Annullato", false); }
-                else { SaveState(); ReleaseLock(); rep.Failed("Interrotto: rilancia lo stesso comando per riprendere", false); }
+                if (DeleteOnCancel && !pausing) { Cleanup(true); rep.Failed("Annullato", false); }
+                else
+                {
+                    SaveState(); ReleaseLock();
+                    if (pausing) rep.Paused(DoneBytes(), total);
+                    else rep.Failed("Interrotto: rilancia lo stesso comando per riprendere", false);
+                }
                 return false;
             }
             if (DoneBytes() < total)
@@ -745,6 +753,11 @@ namespace FastDL
             Send(new Dictionary<string, object> { { "type", "done" }, { "path", path }, { "total", total }, { "seconds", Math.Round(seconds, 2) }, { "avg", Math.Round(avg) } });
         }
 
+        public override void Paused(long done, long total)
+        {
+            Send(new Dictionary<string, object> { { "type", "paused" }, { "done", done }, { "total", total } });
+        }
+
         public override void Failed(string msg, bool fallback)
         {
             Send(new Dictionary<string, object> { { "type", "error" }, { "message", msg }, { "fallback", fallback } });
@@ -755,7 +768,7 @@ namespace FastDL
 
     static class Program
     {
-        const string Version = "1.1.0";
+        const string Version = "1.2.0";
 
         static int Main(string[] args)
         {
@@ -841,6 +854,16 @@ namespace FastDL
                 rep.Send(new Dictionary<string, object> { { "type", "ok" } });
                 return 0;
             }
+            if (cmd == "discard")
+            {
+                // cancella il parziale di un download in pausa (solo i file .fdl / .fdl.state di quel percorso)
+                string p = S(msg, "path");
+                if (!string.IsNullOrEmpty(p) && Path.IsPathRooted(p))
+                    foreach (string ext in new[] { ".fdl", ".fdl.state" })
+                        try { if (File.Exists(p + ext)) File.Delete(p + ext); } catch { }
+                rep.Send(new Dictionary<string, object> { { "type", "ok" } });
+                return 0;
+            }
             if (cmd != "download") return 1;
 
             int conns;
@@ -866,7 +889,9 @@ namespace FastDL
                 {
                     var m = ReadMsg(inp, js);
                     if (m == null) return; // estensione disconnessa: continuiamo comunque
-                    if (S(m, "cmd") == "cancel") dl.Cancel();
+                    string mc = S(m, "cmd");
+                    if (mc == "cancel") dl.Cancel();
+                    else if (mc == "pause") dl.Pause();
                 }
             }) { IsBackground = true };
             reader.Start();
