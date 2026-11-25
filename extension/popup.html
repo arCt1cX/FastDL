@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>FastDL</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #111827; --muted: #6b7280; --line: #e5e7eb;
+    --track: #e5e7eb; --accent: #2563eb; --ok: #16a34a; --err: #dc2626; --hover: #f3f4f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #18181b; --fg: #f4f4f5; --muted: #a1a1aa; --line: #2e2e33;
+      --track: #2e2e33; --accent: #60a5fa; --ok: #4ade80; --err: #f87171; --hover: #232327;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 340px; background: var(--bg); color: var(--fg);
+         font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  header b { font-size: 14px; flex: 1; }
+  select, button { font: inherit; color: inherit; }
+  select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+  .switch { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--muted); }
+  .switch input { accent-color: var(--accent); margin: 0; }
+  section { padding: 6px 0; }
+  h2 { margin: 0; padding: 6px 12px 2px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+       text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; }
+  h2 button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0; text-transform: none; letter-spacing: 0; }
+  .item { padding: 6px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+  .item.click { cursor: pointer; }
+  .item.click:hover { background: var(--hover); }
+  .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+  .meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+  .x:hover { color: var(--err); }
+  .st-done { color: var(--ok); } .st-error { color: var(--err); }
+  .empty { padding: 14px 12px; color: var(--muted); }
+  .dir { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+  .dir input { flex: 1; min-width: 0; font: inherit; color: var(--fg); background: var(--bg);
+               border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  .dir input:focus { outline: none; border-color: var(--accent); }
+  footer { border-top: 1px solid var(--line); padding: 8px 12px; color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+</style>
+</head>
+<body>
+  <header>
+    <b>FastDL</b>
+    <select id="conns" title="Connessioni per download (auto = le regola da solo)">
+      <option value="0">auto</option>
+      <option value="4">4 conn</option><option value="8">8 conn</option>
+      <option value="16">16 conn</option><option value="32">32 conn</option>
+    </select>
+    <label class="switch" title="Intercetta automaticamente i download di Chrome">
+      <input type="checkbox" id="enabled"> attivo
+    </label>
+  </header>
+  <section id="activeSec"><h2>In corso</h2><div id="active"></div></section>
+  <section id="recentSec"><h2>Recenti <button id="clear">svuota</button></h2><div id="recent"></div></section>
+  <div class="empty" id="empty">Nessun download. Scarica qualcosa in Chrome: passa da qui in automatico.</div>
+  <div class="dir">
+    <label for="outDir">Salva in</label>
+    <input id="outDir" type="text" spellcheck="false" placeholder="cartella Download di Windows">
+  </div>
+  <footer><span class="dot" id="dot"></span><span id="status">controllo motore…</span></footer>
+  <script src="popup.js"></script>
+</body>
+</html>
