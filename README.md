@@ -81,7 +81,10 @@ Measured on a ~100 Mbit/s home line. Same file, hashes verified identical.
 - ⚡ **Multi-connection** downloads with dynamic work stealing (no slow "last segment" tail)
 - 🎛️ **Auto connections** (default): starts with 4, doubles while speed keeps improving, stops when it doesn't (max 32). Fast servers get fewer connections, throttled ones get more
 - 🛡️ **Polite by design**: if a server refuses extra connections, FastDL backs off instead of hammering it
-- 🔁 **Resume**: interrupted downloads continue where they stopped
+- ⏯️ **Pause / resume / cancel** from the popup — paused downloads even survive a Chrome or PC restart
+- 🔁 **Keeps going when you close Chrome**: the engine is independent; reopen Chrome and the download is right there in the popup, with progress, pause and cancel
+- 🔍 **Smarter range detection**: many servers answer "here is the whole file" to the first request even though they support parallel ranges — FastDL double-checks instead of giving up and falling back to one connection
+- 🧹 Remove single entries from *Recents*
 - 🍪 **Works with logins**: cookies, referrer and user-agent are forwarded from the browser
 - 🕶️ **Incognito support**: uses the incognito cookie jar, never stores private downloads in history, no file names in notifications
 - ↩️ **Automatic fallback**: small files (< 2 MB), `blob:` links, one-time links or anything that fails is handed back to Chrome — you never lose a download
@@ -119,7 +122,9 @@ More connections only help when the server throttles each connection. Otherwise 
 
 **Windows SmartScreen / antivirus complains.** The exe is not code-signed (certificates cost money). You can build it yourself from source in 2 seconds — see below.
 
-**What if I close Chrome mid-download?** The engine is a separate process and keeps a resume file next to the download; if it gets interrupted, downloading the same file again resumes from where it stopped.
+**What if I close Chrome mid-download?** Nothing: the engine is a separate process and keeps downloading. When you reopen Chrome the popup re-attaches to it (progress, connections, pause, cancel). If the PC shuts down, the download shows up as paused and resumes from where it stopped.
+
+**The popup says "1 conn · the server doesn't accept more connections".** Some servers really serve a file over a single connection (generated files, or hosts that limit free users on purpose). FastDL respects that and downloads like Chrome would — pause is not available there because the server cannot resume either.
 
 ## Build from source
 
@@ -146,7 +151,6 @@ build.ps1            build script
 - [ ] **Mirrors / Metalink**: download the same file from several mirrors at once
 - [ ] Chrome Web Store release (no developer mode needed)
 - [ ] English / multi-language UI (currently Italian)
-- [ ] Pause / resume buttons in the popup
 - [ ] Firefox support
 
 PRs welcome!
@@ -175,6 +179,9 @@ Per l'incognito: `chrome://extensions` → FastDL → *Dettagli* → **Consenti 
 
 ### Cosa fa
 - download multi-connessione con connessioni **automatiche** (oppure 4/8/16/32 fisse)
-- ripresa dopo un'interruzione, cookie e login del browser, cartella personalizzabile
+- **pausa / riprendi / annulla** dal popup; le pause sopravvivono anche al riavvio di Chrome o del PC
+- se **chiudi Chrome il download continua**: riaprendo, lo ritrovi nel popup con progresso, pausa e annulla
+- riconosce i server che rispondono "file intero" ma accettano comunque più connessioni
+- cookie e login del browser, cartella personalizzabile, voci dei recenti eliminabili
 - se qualcosa non va, il download torna a Chrome da solo
 - in incognito non salva lo storico e non mette il nome del file nelle notifiche
