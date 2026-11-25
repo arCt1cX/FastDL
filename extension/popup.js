@@ -52,7 +52,8 @@ function render(active, recent) {
     const sizes = `${fmtSize(j.done)}${j.total > 0 ? ' / ' + fmtSize(j.total) : ''}`;
     let meta;
     const speedEta = `  ·  ${fmtSize(j.speed)}/s` + (j.total > 0 && j.speed > 0 ? '  ·  ' + fmtEta((j.total - j.done) / j.speed) : '');
-    if (paused) meta = `in pausa  ·  ${pct}${sizes}`;
+    if (paused && j.error) meta = `in pausa  ·  ${pct}${sizes}  ·  ${j.error}`;
+    else if (paused) meta = `in pausa  ·  ${pct}${sizes}`;
     else if (j.state === 'interrupted') meta = `interrotto  ·  ${sizes}  ·  il server non permette di riprendere`;
     else if (j.state === 'checking') meta = 'controllo…';
     else if (j.cancelling) meta = 'annullo…';

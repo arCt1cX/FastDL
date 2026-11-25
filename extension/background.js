@@ -136,7 +136,7 @@ async function run(job) {
   const r = job.req;
   const cookie = await cookiesFor(r.url, job.incognito);
   const resuming = job.state === 'paused';
-  job.state = 'starting'; job.cancelled = false; job.pausing = false; job.speed = 0;
+  job.state = 'starting'; job.cancelled = false; job.pausing = false; job.speed = 0; job.error = '';
 
   let port;
   try { port = chrome.runtime.connectNative(HOST); }
@@ -146,6 +146,9 @@ async function run(job) {
   port.onMessage.addListener(m => {
     if (m.type === 'start') {
       job.name = m.name; job.path = m.path; job.total = m.total; job.ranged = m.ranged; job.state = 'downloading';
+      // riscaricato dal sito con un link nuovo: il motore ha ripreso il file di una voce in pausa -> uniscile
+      if (m.resumed) for (const o of [...jobs.values()])
+        if (o !== job && o.path === m.path && !o.port) jobs.delete(o.id);
       saveJobs();
     } else if (m.type === 'progress') {
       job.done = m.done; job.total = m.total; job.speed = m.speed; job.conns = m.conns;
@@ -157,6 +160,10 @@ async function run(job) {
     } else if (m.type === 'done') {
       job.state = 'done'; job.path = m.path; job.name = baseName(m.path); job.done = job.total = m.total; job.avg = m.avg;
       finish(job);
+    } else if (m.type === 'error' && resuming && !job.cancelled) {
+      // ripresa fallita (tipico: link scaduto dopo ore/giorni). Il parziale resta: niente voce persa.
+      keepPaused(job, m.message);
+      try { port.disconnect(); } catch {}
     } else if (m.type === 'error') {
       job.state = job.cancelled ? 'cancelled' : 'error'; job.error = m.message;
       finish(job);
@@ -167,7 +174,9 @@ async function run(job) {
 
   port.onDisconnect.addListener(() => {
     const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : '';
-    if (job.state === 'starting' || job.state === 'downloading') {
+    if (resuming && !job.cancelled && (job.state === 'starting' || job.state === 'downloading')) {
+      keepPaused(job, err || 'processo terminato');
+    } else if (job.state === 'starting' || job.state === 'downloading') {
       const neverStarted = job.state === 'starting';
       job.state = job.cancelled ? 'cancelled' : 'error';
       job.error = err || 'processo terminato';
@@ -188,6 +197,15 @@ async function run(job) {
 
 function control(j, action) {
   return chrome.runtime.sendNativeMessage(HOST, { cmd: 'control', path: j.path, action }).catch(() => {});
+}
+
+function keepPaused(job, message) {
+  job.port = null; job.speed = 0; job.conns = 0;
+  job.state = job.ranged === false && job.total <= 0 ? 'interrupted' : 'paused';
+  job.error = /HTTP 4\d\d/.test(message || '')
+    ? 'link scaduto o non più valido: riscarica il file dal sito, FastDL riprende da qui'
+    : 'ripresa non riuscita (' + message + '): riprova o riscarica dal sito';
+  saveJobs();
 }
 
 function pause(id) {
@@ -325,7 +343,7 @@ function publish() {
     const active = [...jobs.values()].map(j => ({
       id: j.id, name: j.incognito ? '🕶 download privato' : j.name,
       done: j.done, total: j.total, speed: j.speed, conns: j.conns, state: j.state,
-      ranged: !!j.ranged, pausing: !!j.pausing, cancelling: !!j.cancelling
+      ranged: !!j.ranged, pausing: !!j.pausing, cancelling: !!j.cancelling, error: j.error || ''
     }));
     chrome.storage.session.set({ active, recent }).catch(() => {});
 
