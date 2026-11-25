@@ -14,7 +14,7 @@ using Microsoft.Win32.SafeHandles;
 
 [assembly: System.Reflection.AssemblyTitle("FastDL")]
 [assembly: System.Reflection.AssemblyProduct("FastDL")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
 
 namespace FastDL
 {
@@ -350,7 +350,7 @@ namespace FastDL
             try
             {
                 string[] lines = File.ReadAllLines(st);
-                if (lines.Length < 3 || lines[0] != "FDL1") return false;
+                if (lines.Length < 3 || !lines[0].StartsWith("FDL1")) return false;
                 if (long.Parse(lines[1]) != total) return false;
                 if (new FileInfo(part).Length != total) return false;
                 var list = new List<Segment>();
@@ -377,7 +377,7 @@ namespace FastDL
             try
             {
                 var sb = new StringBuilder();
-                sb.Append("FDL1\n").Append(total).Append('\n');
+                sb.Append("FDL1 ").Append(Thread.VolatileRead(ref active)).Append('\n').Append(total).Append('\n'); // header: versione + connessioni attive
                 lock (sync) foreach (var s in segs) sb.Append(s.Start).Append(' ').Append(s.Pos).Append(' ').Append(s.End).Append('\n');
                 string tmp = statePath + ".tmp";
                 File.WriteAllText(tmp, sb.ToString());
@@ -812,7 +812,7 @@ namespace FastDL
 
     static class Program
     {
-        const string Version = "1.3.0";
+        const string Version = "1.3.1";
 
         static int Main(string[] args)
         {
@@ -872,7 +872,7 @@ namespace FastDL
         // Stato di un download dal disco: running (motore vivo, tiene il .lock), resumable, partial, done, gone
         static Dictionary<string, object> Status(string p)
         {
-            var d = new Dictionary<string, object> { { "type", "status" }, { "state", "gone" }, { "done", -1L }, { "total", -1L }, { "ranged", false } };
+            var d = new Dictionary<string, object> { { "type", "status" }, { "state", "gone" }, { "done", -1L }, { "total", -1L }, { "ranged", false }, { "conns", 0 } };
             if (string.IsNullOrEmpty(p) || !Path.IsPathRooted(p)) return d;
             string part = p + ".fdl", st = p + ".fdl.state", lk = p + ".fdl.lock";
             bool running = false;
@@ -887,6 +887,8 @@ namespace FastDL
                 {
                     string[] lines = File.ReadAllLines(st);
                     if (lines.Length >= 2) long.TryParse(lines[1], out total);
+                    string[] head = lines.Length > 0 ? lines[0].Split(' ') : new string[0];
+                    int cn; if (head.Length > 1 && int.TryParse(head[1], out cn)) d["conns"] = cn;
                     long rem = 0; int n = 0;
                     for (int i = 2; i < lines.Length; i++)
                     {

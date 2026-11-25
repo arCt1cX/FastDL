@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FastDL",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Download multi-connessione automatici. Nessuna finestra, nessun programma in background.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvqh8vrXHrJ9908o9UIeMMJuvO9sA/QOtKDRRR5uuHIOup2t7mvLBDoBs2ORc5/iAmZH1xMkkf4AUA/1Ko4SOGIIdt9mI8ZV6IiTeJ9QIts0N2BCxylCzb8NphkqbDkk5fWPHKJ56S2VhPloFaUQkJ8RfUhYZmVJRfXgLco2a5+IS6MaHx1o/A3zapwS/NteUXsDhuHNa8/Vjpkcf/e/WgWYhzMgYFfOwyit+JrGOHuEvYIq+uki88tZB61ZBaxqn0YBth3+cK0FfNZ5Lu8bNXi3xnYngkrONyx2bSqZKHSdVHeYirQYgzVJCwjE0LzHa/Z2dPa/CDvi/OtiraedgsQIDAQAB",
   "permissions": ["downloads", "nativeMessaging", "cookies", "notifications", "storage"],

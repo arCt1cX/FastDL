@@ -47,6 +47,7 @@ async function refresh(job) {
     if (st.done >= 0) job.done = st.done;
     if (st.total > 0) job.total = st.total;
     if (st.ranged) job.ranged = true;
+    job.conns = st.conns || (job.ranged ? job.conns : 1);
     job.lastAt = now;
   } else if (st.state === 'resumable') {
     job.state = 'paused'; job.ranged = true; job.speed = 0;

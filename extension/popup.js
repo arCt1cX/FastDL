@@ -58,7 +58,6 @@ function render(active, recent) {
     else if (j.cancelling) meta = 'annullo…';
     else if (j.pausing) meta = 'metto in pausa…';
     else if (j.state === 'starting') meta = 'avvio…';
-    else if (j.state === 'background') meta = `in background  ·  ${pct}${sizes}` + speedEta;
     else if (!j.ranged) meta = `1 conn  ·  ${pct}${sizes}` + speedEta + '  ·  il server non accetta più connessioni né pausa';
     else meta = `${pct}${sizes}  ·  ${fmtSize(j.speed)}/s  ·  ${j.conns} conn` +
       (j.total > 0 && j.speed > 0 ? '  ·  ' + fmtEta((j.total - j.done) / j.speed) : '');
