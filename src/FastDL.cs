@@ -14,7 +14,7 @@ using Microsoft.Win32.SafeHandles;
 
 [assembly: System.Reflection.AssemblyTitle("FastDL")]
 [assembly: System.Reflection.AssemblyProduct("FastDL")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
 
 namespace FastDL
 {
@@ -156,6 +156,10 @@ namespace FastDL
                 if (m.Success && m.Groups[1].Value == "0") { total = long.Parse(m.Groups[3].Value); ranged = total > 0; }
             }
             if (!ranged) total = r0.ContentLength;
+            // Alcuni server rispondono 200 (file intero) a "bytes=0-" ma accettano i Range veri:
+            // proviamo un byte a meta' file prima di arrenderci alla connessione singola.
+            if (!ranged && code == 200 && total > 4 * MinSplit) ranged = ProbeRanges(total);
+            Program.HostLog("risposta " + code + " | dimensione " + total + " | multi-connessione " + (ranged ? "si" : "no"));
 
             try { ResolvePaths(PickName(r0, ctype), ranged); }
             catch (Exception e) { req0.Abort(); rep.Failed("Impossibile creare il file: " + e.Message, true); return false; }
@@ -181,6 +185,41 @@ namespace FastDL
             SaveState();
             return RunMulti(req0, r0);
         }
+
+        bool ProbeRanges(long len)
+        {
+            HttpWebRequest r = null;
+            try
+            {
+                long mid = len / 2;
+                r = MakeReq(mid, mid);
+                var resp = Send(r);
+                var m = Regex.Match(resp.Headers["Content-Range"] ?? "", @"bytes\s+(\d+)-(\d+)/(\d+)");
+                bool ok = (int)resp.StatusCode == 206 && m.Success && long.Parse(m.Groups[1].Value) == mid
+                          && long.Parse(m.Groups[3].Value) == len;
+                return ok;
+            }
+            catch { return false; }
+            finally { if (r != null) try { r.Abort(); } catch { } }
+        }
+
+        // File di controllo: l'estensione puo' mettere in pausa / annullare anche un motore
+        // rimasto in background dopo la chiusura di Chrome (non ha piu' il canale con lui).
+        void CheckControl(bool canPause)
+        {
+            string ctl = partPath + ".ctl";
+            try
+            {
+                if (!File.Exists(ctl)) return;
+                string a = File.ReadAllText(ctl).Trim();
+                File.Delete(ctl);
+                if (a == "cancel") Cancel();
+                else if (a == "pause" && canPause) Pause();
+            }
+            catch { }
+        }
+
+        static void Hide(string p) { try { File.SetAttributes(p, File.GetAttributes(p) | FileAttributes.Hidden); } catch { } }
 
         // ---------- nome / percorsi / stato ----------
 
@@ -295,6 +334,7 @@ namespace FastDL
             try
             {
                 lockFile = new FileStream(cand + ".fdl.lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+                Hide(cand + ".fdl.lock");
                 return true;
             }
             catch { lockFile = null; return false; }
@@ -342,6 +382,7 @@ namespace FastDL
                 string tmp = statePath + ".tmp";
                 File.WriteAllText(tmp, sb.ToString());
                 if (File.Exists(statePath)) File.Replace(tmp, statePath, null); else File.Move(tmp, statePath);
+                Hide(statePath);
             }
             catch { }
         }
@@ -367,6 +408,7 @@ namespace FastDL
         {
             var sw = Stopwatch.StartNew();
             double lastT = 0, speed = 0; long lastD = 0;
+            try { File.WriteAllText(statePath, "FDL1\n" + total + "\n"); Hide(statePath); } catch { }
             try
             {
                 using (var fs = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20))
@@ -386,6 +428,7 @@ namespace FastDL
                             speed = speed <= 0 ? inst : speed * 0.6 + inst * 0.4;
                             lastT = t; lastD = singleDone;
                             rep.Progress(singleDone, total, speed, 1);
+                            CheckControl(false);
                         }
                     }
                 }
@@ -461,6 +504,7 @@ namespace FastDL
                 lastD = d; lastT = now;
                 rep.Progress(d, total, speed, active);
                 if (now - lastSave >= 2) { SaveState(); lastSave = now; }
+                CheckControl(true);
 
                 if (growing && now - lastEval >= 1.5)
                 {
@@ -768,7 +812,7 @@ namespace FastDL
 
     static class Program
     {
-        const string Version = "1.2.0";
+        const string Version = "1.3.0";
 
         static int Main(string[] args)
         {
@@ -825,6 +869,42 @@ namespace FastDL
             catch { }
         }
 
+        // Stato di un download dal disco: running (motore vivo, tiene il .lock), resumable, partial, done, gone
+        static Dictionary<string, object> Status(string p)
+        {
+            var d = new Dictionary<string, object> { { "type", "status" }, { "state", "gone" }, { "done", -1L }, { "total", -1L }, { "ranged", false } };
+            if (string.IsNullOrEmpty(p) || !Path.IsPathRooted(p)) return d;
+            string part = p + ".fdl", st = p + ".fdl.state", lk = p + ".fdl.lock";
+            bool running = false;
+            if (File.Exists(lk))
+                try { using (new FileStream(lk, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { } }
+                catch (IOException) { running = true; }
+                catch { }
+            long total = -1, done = -1; bool ranged = false;
+            try
+            {
+                if (File.Exists(st))
+                {
+                    string[] lines = File.ReadAllLines(st);
+                    if (lines.Length >= 2) long.TryParse(lines[1], out total);
+                    long rem = 0; int n = 0;
+                    for (int i = 2; i < lines.Length; i++)
+                    {
+                        string[] s = lines[i].Split(' ');
+                        if (s.Length == 3) { rem += long.Parse(s[2]) - long.Parse(s[1]); n++; }
+                    }
+                    if (n > 0 && total > 0) { ranged = true; done = total - rem; }
+                }
+                if (!ranged && File.Exists(part)) done = new FileInfo(part).Length;
+            }
+            catch { }
+            string state = running ? "running"
+                : File.Exists(part) ? (ranged ? "resumable" : "partial")
+                : File.Exists(p) ? "done" : "gone";
+            d["state"] = state; d["done"] = done; d["total"] = total; d["ranged"] = ranged;
+            return d;
+        }
+
         static int NativeMain()
         {
             AppDomain.CurrentDomain.UnhandledException += (s, e) => HostLog("CRASH " + e.ExceptionObject);
@@ -851,6 +931,20 @@ namespace FastDL
                     else Process.Start("explorer.exe", "\"" + Win.DownloadsDir() + "\"");
                 }
                 catch { }
+                rep.Send(new Dictionary<string, object> { { "type", "ok" } });
+                return 0;
+            }
+            if (cmd == "status")
+            {
+                rep.Send(Status(S(msg, "path")));
+                return 0;
+            }
+            if (cmd == "control")
+            {
+                // pausa / annulla per un motore che gira in background (vedi CheckControl)
+                string p = S(msg, "path"), a = S(msg, "action");
+                if (!string.IsNullOrEmpty(p) && Path.IsPathRooted(p) && (a == "pause" || a == "cancel") && File.Exists(p + ".fdl"))
+                    try { File.WriteAllText(p + ".fdl.ctl", a); } catch { }
                 rep.Send(new Dictionary<string, object> { { "type", "ok" } });
                 return 0;
             }

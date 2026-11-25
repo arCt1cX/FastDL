@@ -34,14 +34,16 @@ function render(active, recent) {
   };
 
   for (const j of active) {
-    const paused = j.state === 'paused';
-    const it = el('div', 'item' + (paused ? ' paused' : ''));
+    const paused = j.state === 'paused', stopped = paused || j.state === 'interrupted';
+    const running = j.state === 'downloading' || j.state === 'background';
+    const it = el('div', 'item' + (stopped ? ' paused' : ''));
     it.append(el('div', 'name', j.name));
     const tools = el('div', 'tools');
     if (paused) tools.append(btn('▶', 'Riprendi', 'play', () => send({ cmd: 'resume', id: j.id })));
-    else if (j.state === 'downloading' && j.ranged && !j.pausing)
+    else if (j.state === 'interrupted') tools.append(btn('↻', 'Ricomincia da capo (questo server non permette di riprendere)', 'play', () => send({ cmd: 'resume', id: j.id })));
+    else if (running && j.ranged && !j.pausing)
       tools.append(btn('❚❚', 'Pausa', 'pause', () => send({ cmd: 'pause', id: j.id })));
-    tools.append(btn('×', paused ? 'Annulla e cancella il file parziale' : 'Annulla e cancella', 'del', () => send({ cmd: 'cancel', id: j.id })));
+    tools.append(btn('×', stopped ? 'Annulla e cancella il file parziale' : 'Annulla e cancella', 'del', () => send({ cmd: 'cancel', id: j.id })));
     it.append(tools);
     const bar = el('div', 'bar'), fill = el('i');
     if (j.total > 0) fill.style.width = (j.done * 100 / j.total).toFixed(1) + '%';
@@ -49,9 +51,15 @@ function render(active, recent) {
     const pct = j.total > 0 ? Math.floor(j.done * 100 / j.total) + '%  ·  ' : '';
     const sizes = `${fmtSize(j.done)}${j.total > 0 ? ' / ' + fmtSize(j.total) : ''}`;
     let meta;
+    const speedEta = `  ·  ${fmtSize(j.speed)}/s` + (j.total > 0 && j.speed > 0 ? '  ·  ' + fmtEta((j.total - j.done) / j.speed) : '');
     if (paused) meta = `in pausa  ·  ${pct}${sizes}`;
+    else if (j.state === 'interrupted') meta = `interrotto  ·  ${sizes}  ·  il server non permette di riprendere`;
+    else if (j.state === 'checking') meta = 'controllo…';
+    else if (j.cancelling) meta = 'annullo…';
     else if (j.pausing) meta = 'metto in pausa…';
     else if (j.state === 'starting') meta = 'avvio…';
+    else if (j.state === 'background') meta = `in background  ·  ${pct}${sizes}` + speedEta;
+    else if (!j.ranged) meta = `1 conn  ·  ${pct}${sizes}` + speedEta + '  ·  il server non accetta più connessioni né pausa';
     else meta = `${pct}${sizes}  ·  ${fmtSize(j.speed)}/s  ·  ${j.conns} conn` +
       (j.total > 0 && j.speed > 0 ? '  ·  ' + fmtEta((j.total - j.done) / j.speed) : '');
     it.append(el('div', 'meta', meta));

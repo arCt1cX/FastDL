@@ -9,18 +9,70 @@ const jobs = new Map();
 const privatePaths = new Map(); // notifiche incognito: solo in memoria, mai salvate
 let seq = 0;
 
-const ready = chrome.storage.local.get(['enabled', 'connections', 'outDir', 'recent', 'paused']).then(s => {
+const ready = chrome.storage.local.get(['enabled', 'connections', 'outDir', 'recent', 'jobs', 'paused']).then(s => {
   if (typeof s.enabled === 'boolean') settings.enabled = s.enabled;
   if (typeof s.connections === 'number') settings.connections = s.connections;
   if (typeof s.outDir === 'string') settings.outDir = s.outDir;
   if (Array.isArray(s.recent)) recent = s.recent;
-  // download in pausa sopravvivono al riavvio di Chrome (gli incognito no: mai salvati su disco)
-  if (Array.isArray(s.paused)) for (const p of s.paused) {
-    const job = { ...p, id: ++seq, state: 'paused', speed: 0, conns: 0 };
+  // i download sopravvivono al riavvio di Chrome (gli incognito no: mai salvati su disco).
+  // Al riavvio chiediamo al motore com'e' messo ognuno: ancora in corso in background, in pausa, finito...
+  const saved = Array.isArray(s.jobs) ? s.jobs : (Array.isArray(s.paused) ? s.paused : []);
+  for (const p of saved) {
+    const job = { ...p, id: ++seq, state: 'checking', speed: 0, conns: 0 };
     jobs.set(job.id, job);
+    refresh(job);
   }
   publish();
 });
+
+// fa partire il service worker all'avvio di Chrome, cosi' ritrova subito i download in background
+chrome.runtime.onStartup.addListener(() => {});
+
+async function status(path) {
+  try { return await chrome.runtime.sendNativeMessage(HOST, { cmd: 'status', path }); }
+  catch { return null; }
+}
+
+// aggiorna un job senza canale col motore (Chrome e' stato chiuso e riaperto)
+async function refresh(job) {
+  const st = job.path ? await status(job.path) : { state: 'gone' };
+  if (!st || !jobs.has(job.id) || job.port) return;
+  const now = Date.now();
+  if (st.state === 'running') {
+    if (job.state === 'background' && job.lastAt && st.done >= 0) {
+      const inst = (st.done - job.done) * 1000 / Math.max(1, now - job.lastAt);
+      job.speed = job.speed ? job.speed * 0.5 + inst * 0.5 : inst;
+    }
+    job.state = 'background';
+    if (st.done >= 0) job.done = st.done;
+    if (st.total > 0) job.total = st.total;
+    if (st.ranged) job.ranged = true;
+    job.lastAt = now;
+  } else if (st.state === 'resumable') {
+    job.state = 'paused'; job.ranged = true; job.speed = 0;
+    if (st.done >= 0) job.done = st.done; if (st.total > 0) job.total = st.total;
+  } else if (st.state === 'partial') {
+    job.state = 'interrupted'; job.speed = 0;
+    if (st.done >= 0) job.done = st.done;
+  } else if (st.state === 'done') {
+    job.state = 'done'; job.done = job.total; finish(job);
+  } else {
+    job.state = job.cancelling ? 'cancelled' : 'gone';
+    finish(job, true);
+  }
+  saveJobs();
+  publish();
+  ensurePolling();
+}
+
+let pollTimer = null;
+function ensurePolling() {
+  const need = [...jobs.values()].some(j => j.state === 'background');
+  if (need && !pollTimer) pollTimer = setInterval(() => {
+    for (const j of jobs.values()) if (j.state === 'background') refresh(j);
+  }, 2000);
+  if (!need && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
 
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== 'local') return;
@@ -89,18 +141,18 @@ async function run(job) {
   try { port = chrome.runtime.connectNative(HOST); }
   catch (e) { if (!resuming) { jobs.delete(job.id); fallback(r.url, job.incognito); } return; }
   job.port = port;
-  savePaused();
 
   port.onMessage.addListener(m => {
     if (m.type === 'start') {
       job.name = m.name; job.path = m.path; job.total = m.total; job.ranged = m.ranged; job.state = 'downloading';
+      saveJobs();
     } else if (m.type === 'progress') {
       job.done = m.done; job.total = m.total; job.speed = m.speed; job.conns = m.conns;
     } else if (m.type === 'paused') {
       job.state = 'paused'; job.done = m.done; job.total = m.total; job.speed = 0; job.conns = 0;
       try { port.disconnect(); } catch {}
       job.port = null;
-      savePaused();
+      saveJobs();
     } else if (m.type === 'done') {
       job.state = 'done'; job.path = m.path; job.name = baseName(m.path); job.done = job.total = m.total; job.avg = m.avg;
       finish(job);
@@ -133,22 +185,34 @@ async function run(job) {
   publish();
 }
 
+function control(j, action) {
+  return chrome.runtime.sendNativeMessage(HOST, { cmd: 'control', path: j.path, action }).catch(() => {});
+}
+
 function pause(id) {
   const j = jobs.get(id);
+  if (j && j.state === 'background' && j.ranged) { j.pausing = true; control(j, 'pause'); publish(); return; }
   if (!j || !j.port || j.state !== 'downloading' || !j.ranged) return;
   j.pausing = true;
   try { j.port.postMessage({ cmd: 'pause' }); } catch {}
 }
 
-function resume(id) {
+async function resume(id) {
   const j = jobs.get(id);
-  if (j && j.state === 'paused') run(j);
+  if (!j) return;
+  if (j.state === 'interrupted') {
+    // server senza download a pezzi: non si puo' riprendere, si ricomincia da capo
+    if (j.path) await chrome.runtime.sendNativeMessage(HOST, { cmd: 'discard', path: j.path }).catch(() => {});
+    j.done = 0; j.state = 'paused';
+  }
+  if (j.state === 'paused') run(j);
 }
 
 function cancel(id) {
   const j = jobs.get(id);
   if (!j) return;
-  if (j.state === 'paused') {
+  if (j.state === 'background') { j.cancelling = true; control(j, 'cancel'); publish(); return; }
+  if (j.state === 'paused' || j.state === 'interrupted') {
     // nessun processo attivo: chiediamo al motore di cancellare il file parziale
     if (j.path) chrome.runtime.sendNativeMessage(HOST, { cmd: 'discard', path: j.path }).catch(() => {});
     j.state = 'cancelled';
@@ -159,11 +223,11 @@ function cancel(id) {
   if (j.port) { j.cancelled = true; try { j.port.postMessage({ cmd: 'cancel' }); } catch {} }
 }
 
-function savePaused() {
-  const paused = [...jobs.values()]
-    .filter(j => j.state === 'paused' && !j.incognito)
+function saveJobs() {
+  const list = [...jobs.values()]
+    .filter(j => !j.incognito && j.path && j.req)
     .map(({ url, name, path, done, total, ranged, started, req }) => ({ url, name, path, done, total, ranged, started, req }));
-  chrome.storage.local.set({ paused });
+  chrome.storage.local.set({ jobs: list, paused: [] });
 }
 
 function fallback(url, incognito) {
@@ -193,11 +257,13 @@ function shouldSkip(item) {
   return false;
 }
 
-function finish(job) {
+function finish(job, silent) {
   if (!jobs.has(job.id)) return;
   jobs.delete(job.id);
   try { job.port && job.port.disconnect(); } catch {}
-  savePaused();
+  saveJobs();
+  ensurePolling();
+  if (silent && job.state === 'gone') return; // file sparito (cancellato a mano): niente voce nei recenti
   const r = { id: job.id + '-' + job.started, name: job.name, path: job.path, total: job.total, state: job.state, error: job.error, avg: job.avg, at: Date.now() };
   if (job.incognito) {
     if (job.path) privatePaths.set('fdl:' + r.id, job.path);
@@ -258,11 +324,11 @@ function publish() {
     const active = [...jobs.values()].map(j => ({
       id: j.id, name: j.incognito ? '🕶 download privato' : j.name,
       done: j.done, total: j.total, speed: j.speed, conns: j.conns, state: j.state,
-      ranged: !!j.ranged, pausing: !!j.pausing
+      ranged: !!j.ranged, pausing: !!j.pausing, cancelling: !!j.cancelling
     }));
     chrome.storage.session.set({ active, recent }).catch(() => {});
 
-    const running = active.filter(j => j.state !== 'paused');
+    const running = active.filter(j => j.state !== 'paused' && j.state !== 'interrupted');
     if (!running.length) {
       chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
       chrome.action.setBadgeText({ text: active.length ? '❚❚' : '' });
